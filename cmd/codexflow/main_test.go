@@ -36,6 +36,12 @@ func TestBuildRolePromptFirstTurn(t *testing.T) {
 	if !containsText(got, "本轮指令: 先完成第一轮实现") {
 		t.Fatalf("提示词缺少首轮指令: %q", got)
 	}
+	if !containsText(got, "除非当前状态是明确 blocked，否则本轮必须产出至少一种可检查结果") {
+		t.Fatalf("提示词缺少强制产出要求: %q", got)
+	}
+	if !containsText(got, "reply_to_user 用简洁中文说明本轮检查了什么、做了什么、结果是什么，并尽量写出具体文件、命令或产出物") {
+		t.Fatalf("提示词缺少具体交接要求: %q", got)
+	}
 }
 
 func TestBuildRolePromptUsesLastHandoffPrompt(t *testing.T) {
@@ -328,12 +334,13 @@ func TestBuildCodexArgsForNewSession(t *testing.T) {
 func TestBuildCodexArgsForResumeSession(t *testing.T) {
 	got := buildCodexArgs("/tmp/work", "继续执行", "/tmp/out.json", "session-123", "/tmp/schema.json")
 	want := []string{
-		"exec", "resume", "session-123",
+		"exec",
 		"--color", "never",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--cd", "/tmp/work",
 		"--output-schema", "/tmp/schema.json",
 		"-o", "/tmp/out.json",
+		"resume", "session-123",
 		"继续执行",
 	}
 

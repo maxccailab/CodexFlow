@@ -316,19 +316,22 @@ func buildRolePrompt(state TaskRuntimeState, role RoleConfig) string {
 		"2. 优先直接执行能推进目标的动作，并把范围控制在本轮最小且高价值的闭环内。",
 		"3. 不要把一轮扩展成多个分散的大任务；本轮应尽量形成一个清晰结果，或明确识别一个清晰阻塞点。",
 		"4. 不要编造未执行过的检查、命令、修改、验证或结论。",
-		"5. 如果目标已经完成且没有明确待办，直接返回 complete。",
-		"6. 如果存在当前无法继续推进的明确阻塞，直接返回 blocked，并写清原因。",
-		"7. 如果任务还可以继续推进，返回 continue，并从允许交接列表中选择 next_role。",
+		"5. 除非当前状态是明确 blocked，否则本轮必须产出至少一种可检查结果，例如代码修改、文档更新、测试补充、配置变更、命令执行记录或检查结论，不能只停留在空泛表述。",
+		"6. 如果没有修改文件，也必须明确说明检查了哪些文件、执行了哪些命令、观察到什么结果，以及为什么当前无需修改。",
+		"7. 如果目标已经完成且没有明确待办，直接返回 complete。",
+		"8. 如果存在当前无法继续推进的明确阻塞，直接返回 blocked，并写清原因。",
+		"9. 如果任务还可以继续推进，返回 continue，并从允许交接列表中选择 next_role。",
 		"输出要求:",
 		"1. 最终输出必须严格符合给定 JSON Schema，不要输出额外文本。",
 		"2. status 只能是 continue、blocked、complete。",
-		"3. reply_to_user 用简洁中文说明本轮检查了什么、做了什么、结果是什么。",
-		"4. handoff_summary 用一句话概括本轮结果。",
-		"5. handoff_items 列出下一步必须关注的事项；没有则返回空数组。",
-		"6. 如果 status=continue，next_role 必须从允许交接列表中选择。",
-		"7. 如果 status=complete，next_role 必须为空字符串。",
-		"8. 如果 status=blocked，completion_reason 和 reply_to_user 必须明确说明阻塞点。",
-		"9. completion_confidence 是 0 到 1 的数字，表示你对当前判断的把握。",
+		"3. reply_to_user 用简洁中文说明本轮检查了什么、做了什么、结果是什么，并尽量写出具体文件、命令或产出物。",
+		"4. handoff_summary 用一句话概括本轮结果，不能只写空泛结论。",
+		"5. handoff_items 列出下一步必须关注的事项，优先写明需要查看的文件、待补的验证或待继续的具体动作；没有则返回空数组。",
+		"6. 如果本轮有文件修改、文档更新、测试补充或关键检查结果，必须在 reply_to_user 或 handoff_items 中明确体现，保证下一个角色知道你实际做了什么。",
+		"7. 如果 status=continue，next_role 必须从允许交接列表中选择。",
+		"8. 如果 status=complete，next_role 必须为空字符串。",
+		"9. 如果 status=blocked，completion_reason 和 reply_to_user 必须明确说明阻塞点。",
+		"10. completion_confidence 是 0 到 1 的数字，表示你对当前判断的把握。",
 	}
 	return strings.Join(lines, "\n")
 }
@@ -489,6 +492,7 @@ func executeCodex(codexPath string, dir string, prompt string, outputFile string
 
 func buildCodexArgs(dir string, prompt string, outputFile string, sessionID string, schemaPath string) []string {
 	args := []string{
+		"exec",
 		"--color", "never",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--cd", dir,
@@ -497,9 +501,7 @@ func buildCodexArgs(dir string, prompt string, outputFile string, sessionID stri
 	}
 
 	if sessionID != "" {
-		args = append([]string{"exec", "resume", sessionID}, args...)
-	} else {
-		args = append([]string{"exec"}, args...)
+		args = append(args, "resume", sessionID)
 	}
 
 	args = append(args, prompt)

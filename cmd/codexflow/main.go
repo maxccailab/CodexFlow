@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -468,6 +470,24 @@ func runCodexCommand(codexPath string, dir string, prompt string, outputFile str
 }
 
 func executeCodex(codexPath string, dir string, prompt string, outputFile string, sessionID string, schemaPath string) (string, error) {
+	args := buildCodexArgs(dir, prompt, outputFile, sessionID, schemaPath)
+
+	cmd := exec.Command(codexPath, args...)
+	cmd.Dir = dir
+
+	var combined bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &combined)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &combined)
+
+	err := cmd.Run()
+	outputText := combined.String()
+	if err != nil {
+		return outputText, err
+	}
+	return outputText, nil
+}
+
+func buildCodexArgs(dir string, prompt string, outputFile string, sessionID string, schemaPath string) []string {
 	args := []string{
 		"--color", "never",
 		"--dangerously-bypass-approvals-and-sandbox",
@@ -483,16 +503,7 @@ func executeCodex(codexPath string, dir string, prompt string, outputFile string
 	}
 
 	args = append(args, prompt)
-
-	cmd := exec.Command(codexPath, args...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	outputText := string(output)
-	fmt.Print(outputText)
-	if err != nil {
-		return outputText, err
-	}
-	return outputText, nil
+	return args
 }
 
 func readSessionID(path string) (string, error) {

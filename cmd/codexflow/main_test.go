@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,7 +72,7 @@ func TestBuildRolePromptUsesLastHandoffPrompt(t *testing.T) {
 
 func TestValidateConfig(t *testing.T) {
 	cfg := &TaskConfig{
-		TaskID:      "feature-a",
+		TaskID:      "todo-api",
 		Goal:        "完成一个最小闭环",
 		InitialRole: "设计者",
 		MaxTurns:    12,
@@ -247,6 +249,23 @@ func TestAppendHistory(t *testing.T) {
 	}
 }
 
+func TestMultiWriterWritesToTerminalAndBuffer(t *testing.T) {
+	var terminal bytes.Buffer
+	var captured bytes.Buffer
+
+	writer := io.MultiWriter(&terminal, &captured)
+	if _, err := writer.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if terminal.String() != "hello" {
+		t.Fatalf("unexpected terminal output: %q", terminal.String())
+	}
+	if captured.String() != "hello" {
+		t.Fatalf("unexpected captured output: %q", captured.String())
+	}
+}
+
 func TestLoadRuntimeStateNotExist(t *testing.T) {
 	_, err := loadRuntimeState(filepath.Join(t.TempDir(), "missing.json"))
 	if !os.IsNotExist(err) {
@@ -281,6 +300,50 @@ func TestParseSessionID(t *testing.T) {
 	want := "123e4567-e89b-12d3-a456-426614174000"
 	if got != want {
 		t.Fatalf("parseSessionID() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildCodexArgsForNewSession(t *testing.T) {
+	got := buildCodexArgs("/tmp/work", "执行任务", "/tmp/out.json", "", "/tmp/schema.json")
+	want := []string{
+		"exec",
+		"--color", "never",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--cd", "/tmp/work",
+		"--output-schema", "/tmp/schema.json",
+		"-o", "/tmp/out.json",
+		"执行任务",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("buildCodexArgs() length = %d, want %d, got %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("buildCodexArgs()[%d] = %q, want %q; full=%v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestBuildCodexArgsForResumeSession(t *testing.T) {
+	got := buildCodexArgs("/tmp/work", "继续执行", "/tmp/out.json", "session-123", "/tmp/schema.json")
+	want := []string{
+		"exec", "resume", "session-123",
+		"--color", "never",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--cd", "/tmp/work",
+		"--output-schema", "/tmp/schema.json",
+		"-o", "/tmp/out.json",
+		"继续执行",
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("buildCodexArgs() length = %d, want %d, got %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("buildCodexArgs()[%d] = %q, want %q; full=%v", i, got[i], want[i], got)
+		}
 	}
 }
 

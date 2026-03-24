@@ -29,6 +29,7 @@ type TaskConfig struct {
 	TaskID      string       `json:"task_id"`
 	Goal        string       `json:"goal"`
 	InitialRole string       `json:"initial_role"`
+	TopRole     string       `json:"top_role"`
 	MaxTurns    int          `json:"max_turns"`
 	Roles       []RoleConfig `json:"roles"`
 }
@@ -163,7 +164,7 @@ func run(configPath string, dir string) error {
 			return fmt.Errorf("未找到角色 %q", state.ActiveRole)
 		}
 
-		prompt := buildRolePrompt(state, *role)
+		prompt := buildRolePrompt(state, cfg, *role)
 		result, err := runRole(codexPath, absDir, stateDir, *role, prompt, schemaPath)
 		if err != nil {
 			return err
@@ -172,7 +173,7 @@ func run(configPath string, dir string) error {
 
 		fmt.Printf("\n[第 %d 轮][%s]\n%s\n", state.TurnCount+1, role.Name, formatRoleMessage(handoff))
 
-		if err := validateHandoff(*role, handoff); err != nil {
+		if err := validateHandoff(cfg, *role, handoff); err != nil {
 			return fmt.Errorf("角色 %q 输出校验失败: %w；结构化输出文件: %s；原始输出文件: %s", role.Name, err, result.OutputFile, result.RawOutputFile)
 		}
 
@@ -246,6 +247,9 @@ func validateConfig(cfg *TaskConfig) error {
 	if strings.TrimSpace(cfg.InitialRole) == "" {
 		return fmt.Errorf("配置中的 initial_role 不能为空")
 	}
+	if strings.TrimSpace(cfg.TopRole) == "" {
+		return fmt.Errorf("配置中的 top_role 不能为空")
+	}
 	if cfg.MaxTurns <= 0 {
 		return fmt.Errorf("配置中的 max_turns 必须大于 0")
 	}
@@ -266,6 +270,9 @@ func validateConfig(cfg *TaskConfig) error {
 
 	if cfg.roleByName(cfg.InitialRole) == nil {
 		return fmt.Errorf("initial_role %q 未在 roles 中定义", cfg.InitialRole)
+	}
+	if cfg.roleByName(cfg.TopRole) == nil {
+		return fmt.Errorf("top_role %q 未在 roles 中定义", cfg.TopRole)
 	}
 
 	for _, role := range cfg.Roles {
@@ -288,7 +295,7 @@ func (cfg *TaskConfig) roleByName(name string) *RoleConfig {
 	return nil
 }
 
-func buildRolePrompt(state TaskRuntimeState, role RoleConfig) string {
+func buildRolePrompt(state TaskRuntimeState, cfg *TaskConfig, role RoleConfig) string {
 	lastHandoffSummary := "无"
 	lastHandoffItems := "无"
 
@@ -305,6 +312,7 @@ func buildRolePrompt(state TaskRuntimeState, role RoleConfig) string {
 		fmt.Sprintf("工作目录: %s", state.WorkspaceDir),
 		fmt.Sprintf("当前总轮次: %d / %d", state.TurnCount+1, state.MaxTurns),
 		fmt.Sprintf("当前角色: %s", role.Name),
+		fmt.Sprintf("唯一允许结束流程的置顶角色: %s", cfg.TopRole),
 		fmt.Sprintf("角色描述: %s", emptyFallback(role.Description, "无")),
 		fmt.Sprintf("角色职责: %s", emptyFallback(role.Instructions, "无")),
 		fmt.Sprintf("允许交接到: %s", allowedRolesText(role.AllowedNextRoles)),
@@ -318,7 +326,7 @@ func buildRolePrompt(state TaskRuntimeState, role RoleConfig) string {
 		"4. 不要编造未执行过的检查、命令、修改、验证或结论。",
 		"5. 除非当前状态是明确 blocked，否则本轮必须产出至少一种可检查结果，例如代码修改、文档更新、测试补充、配置变更、命令执行记录或检查结论，不能只停留在空泛表述。",
 		"6. 如果没有修改文件，也必须明确说明检查了哪些文件、执行了哪些命令、观察到什么结果，以及为什么当前无需修改。",
-		"7. 如果目标已经完成且没有明确待办，直接返回 complete。",
+		fmt.Sprintf("7. 只有置顶角色 %s 可以返回 complete；其他角色即使判断主体工作已完成，也必须继续流转给置顶角色做最终判定。", cfg.TopRole),
 		"8. 如果存在当前无法继续推进的明确阻塞，直接返回 blocked，并写清原因。",
 		"9. 如果任务还可以继续推进，返回 continue，并从允许交接列表中选择 next_role。",
 		"输出要求:",
@@ -329,7 +337,7 @@ func buildRolePrompt(state TaskRuntimeState, role RoleConfig) string {
 		"5. handoff_items 列出下一步必须关注的事项，优先写明需要查看的文件、待补的验证或待继续的具体动作；没有则返回空数组。",
 		"6. 如果本轮有文件修改、文档更新、测试补充或关键检查结果，必须在 reply_to_user 或 handoff_items 中明确体现，保证下一个角色知道你实际做了什么。",
 		"7. 如果 status=continue，next_role 必须从允许交接列表中选择。",
-		"8. 如果 status=complete，next_role 必须为空字符串。",
+		fmt.Sprintf("8. 只有置顶角色 %s 可以设置 status=complete；如果不是该角色，不允许输出 complete。", cfg.TopRole),
 		"9. 如果 status=blocked，completion_reason 和 reply_to_user 必须明确说明阻塞点。",
 		"10. completion_confidence 是 0 到 1 的数字，表示你对当前判断的把握。",
 	}
@@ -543,7 +551,7 @@ func shouldResetSession(output string) bool {
 		strings.Contains(lower, "no session")
 }
 
-func validateHandoff(role RoleConfig, handoff *Handoff) error {
+func validateHandoff(cfg *TaskConfig, role RoleConfig, handoff *Handoff) error {
 	switch handoff.Status {
 	case "continue", "blocked", "complete":
 	default:
@@ -572,6 +580,9 @@ func validateHandoff(role RoleConfig, handoff *Handoff) error {
 
 	if strings.TrimSpace(handoff.NextRole) != "" {
 		return fmt.Errorf("角色 %q 在非 continue 状态下 next_role 必须为空", role.Name)
+	}
+	if handoff.Status == "complete" && role.Name != cfg.TopRole {
+		return fmt.Errorf("角色 %q 不是置顶角色 %q，不能返回 complete", role.Name, cfg.TopRole)
 	}
 	if handoff.Status == "blocked" && strings.TrimSpace(handoff.CompletionReason) == "" {
 		return fmt.Errorf("角色 %q 返回 blocked 时 completion_reason 不能为空", role.Name)

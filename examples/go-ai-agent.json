@@ -2,6 +2,7 @@
   "task_id": "go-ai-agent",
   "goal": "在当前项目中使用 Go 开发一个基于工作目录和 session 的通用 AI Agent，具备基础配置管理、OpenAI 调用接入、模型调用抽象、工具调用接口、记忆或上下文管理、任务执行主循环，以及最小可运行示例和必要测试，形成一个可扩展的项目骨架",
   "initial_role": "产品架构师",
+  "top_role": "项目管理员",
   "max_turns": 24,
   "roles": [
     {

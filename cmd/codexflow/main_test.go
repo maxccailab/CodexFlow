@@ -25,10 +25,14 @@ func TestBuildRolePromptFirstTurn(t *testing.T) {
 		Prompt:           "先完成第一轮实现",
 		AllowedNextRoles: []string{"审核者", "测试者"},
 	}
+	cfg := &TaskConfig{TopRole: "审核者"}
 
-	got := buildRolePrompt(state, role)
+	got := buildRolePrompt(state, cfg, role)
 	if !containsText(got, "你正在一个单任务、多角色、串行执行的自动编排器中。") {
 		t.Fatalf("提示词缺少固定前缀: %q", got)
+	}
+	if !containsText(got, "唯一允许结束流程的置顶角色: 审核者") {
+		t.Fatalf("提示词缺少置顶角色约束: %q", got)
 	}
 	if !containsText(got, "允许交接到: 审核者、测试者") {
 		t.Fatalf("提示词缺少允许角色: %q", got)
@@ -63,8 +67,9 @@ func TestBuildRolePromptUsesLastHandoffPrompt(t *testing.T) {
 		Prompt:           "审查最新结果",
 		AllowedNextRoles: []string{"设计者"},
 	}
+	cfg := &TaskConfig{TopRole: "审核者"}
 
-	got := buildRolePrompt(state, role)
+	got := buildRolePrompt(state, cfg, role)
 	if !containsText(got, "最近一次交接摘要: 已完成初版") {
 		t.Fatalf("提示词缺少交接摘要: %q", got)
 	}
@@ -81,6 +86,7 @@ func TestValidateConfig(t *testing.T) {
 		TaskID:      "todo-api",
 		Goal:        "完成一个最小闭环",
 		InitialRole: "设计者",
+		TopRole:     "审核者",
 		MaxTurns:    12,
 		Roles: []RoleConfig{
 			{Name: "设计者", AllowedNextRoles: []string{"审核者", "测试者"}},
@@ -95,6 +101,7 @@ func TestValidateConfig(t *testing.T) {
 }
 
 func TestValidateHandoffContinue(t *testing.T) {
+	cfg := &TaskConfig{TopRole: "审核者"}
 	role := RoleConfig{Name: "设计者", AllowedNextRoles: []string{"审核者", "测试者"}}
 	handoff := &Handoff{
 		Status:               "continue",
@@ -104,7 +111,7 @@ func TestValidateHandoffContinue(t *testing.T) {
 		CompletionConfidence: 0.8,
 	}
 
-	if err := validateHandoff(role, handoff); err != nil {
+	if err := validateHandoff(cfg, role, handoff); err != nil {
 		t.Fatalf("validateHandoff() error = %v", err)
 	}
 }
@@ -137,6 +144,7 @@ func TestFormatRoleMessageIncludesNextStep(t *testing.T) {
 }
 
 func TestValidateHandoffRejectsEmptyUserReply(t *testing.T) {
+	cfg := &TaskConfig{TopRole: "审核者"}
 	role := RoleConfig{Name: "设计者", AllowedNextRoles: []string{"审核者"}}
 	handoff := &Handoff{
 		Status:               "continue",
@@ -145,13 +153,14 @@ func TestValidateHandoffRejectsEmptyUserReply(t *testing.T) {
 		CompletionConfidence: 0.8,
 	}
 
-	err := validateHandoff(role, handoff)
+	err := validateHandoff(cfg, role, handoff)
 	if err == nil || !strings.Contains(err.Error(), "reply_to_user") {
 		t.Fatalf("expected reply_to_user validation error, got %v", err)
 	}
 }
 
 func TestValidateHandoffRejectsEmptySummary(t *testing.T) {
+	cfg := &TaskConfig{TopRole: "审核者"}
 	role := RoleConfig{Name: "设计者", AllowedNextRoles: []string{"审核者"}}
 	handoff := &Handoff{
 		Status:               "continue",
@@ -160,9 +169,60 @@ func TestValidateHandoffRejectsEmptySummary(t *testing.T) {
 		CompletionConfidence: 0.8,
 	}
 
-	err := validateHandoff(role, handoff)
+	err := validateHandoff(cfg, role, handoff)
 	if err == nil || !strings.Contains(err.Error(), "handoff_summary") {
 		t.Fatalf("expected handoff_summary validation error, got %v", err)
+	}
+}
+
+func TestValidateConfigRequiresTopRole(t *testing.T) {
+	cfg := &TaskConfig{
+		TaskID:      "todo-api",
+		Goal:        "完成一个最小闭环",
+		InitialRole: "设计者",
+		MaxTurns:    12,
+		Roles: []RoleConfig{
+			{Name: "设计者", AllowedNextRoles: []string{"审核者"}},
+			{Name: "审核者", AllowedNextRoles: []string{"设计者"}},
+		},
+	}
+
+	err := validateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "top_role") {
+		t.Fatalf("expected top_role validation error, got %v", err)
+	}
+}
+
+func TestValidateHandoffRejectsCompleteFromNonTopRole(t *testing.T) {
+	cfg := &TaskConfig{TopRole: "审核者"}
+	role := RoleConfig{Name: "设计者", AllowedNextRoles: []string{"审核者"}}
+	handoff := &Handoff{
+		Status:               "complete",
+		ReplyToUser:          "主体工作已完成，等待最终判定",
+		HandoffSummary:       "当前实现已完成，但应继续流转给置顶角色",
+		CompletionReason:     "主体工作完成",
+		CompletionConfidence: 0.9,
+	}
+
+	err := validateHandoff(cfg, role, handoff)
+	if err == nil || !strings.Contains(err.Error(), "不能返回 complete") {
+		t.Fatalf("expected complete restriction error, got %v", err)
+	}
+}
+
+func TestValidateHandoffAllowsCompleteFromTopRole(t *testing.T) {
+	cfg := &TaskConfig{TopRole: "审核者"}
+	role := RoleConfig{Name: "审核者", AllowedNextRoles: []string{"设计者"}}
+	handoff := &Handoff{
+		Status:               "complete",
+		ReplyToUser:          "已确认任务满足目标，可结束流程",
+		HandoffSummary:       "置顶角色完成最终验收",
+		CompletionReason:     "验收通过",
+		CompletionConfidence: 0.95,
+	}
+
+	if err := validateHandoff(cfg, role, handoff); err != nil {
+		t.Fatalf("validateHandoff() error = %v", err)
 	}
 }
 

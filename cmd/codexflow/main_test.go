@@ -31,20 +31,38 @@ func TestBuildRolePromptFirstTurn(t *testing.T) {
 	if !containsText(got, "你正在一个单任务、多角色、串行执行的自动编排器中。") {
 		t.Fatalf("提示词缺少固定前缀: %q", got)
 	}
-	if !containsText(got, "唯一允许结束流程的置顶角色: 审核者") {
-		t.Fatalf("提示词缺少置顶角色约束: %q", got)
+	if !containsText(got, "任务上下文:") || !containsText(got, "本轮要求:") || !containsText(got, "状态判定:") || !containsText(got, "输出要求:") {
+		t.Fatalf("提示词缺少分段结构: %q", got)
 	}
-	if !containsText(got, "允许交接到: 审核者、测试者") {
+	if strings.Contains(got, "你是置顶角色") || strings.Contains(got, "可以返回 complete") {
+		t.Fatalf("非置顶角色提示词不应暴露置顶角色信息: %q", got)
+	}
+	if !containsText(got, "- 允许交接到: 审核者、测试者") {
 		t.Fatalf("提示词缺少允许角色: %q", got)
 	}
-	if !containsText(got, "本轮指令: 先完成第一轮实现") {
+	if !containsText(got, "由于你是独立 session，开始行动前必须先基于任务目标、最近交接信息和相关文件/产出做最小必要核查。") {
+		t.Fatalf("提示词缺少独立 session 约束: %q", got)
+	}
+	if !containsText(got, "只有在存在明确阻塞且当前无法继续推进时，才返回 blocked。") {
+		t.Fatalf("非置顶角色提示词缺少阻塞规则: %q", got)
+	}
+	if !containsText(got, "- 本轮指令: 先完成第一轮实现") {
 		t.Fatalf("提示词缺少首轮指令: %q", got)
 	}
 	if !containsText(got, "除非当前状态是明确 blocked，否则本轮必须产出至少一种可检查结果") {
-		t.Fatalf("提示词缺少强制产出要求: %q", got)
+		t.Fatalf("提示词缺少必须产出要求: %q", got)
 	}
-	if !containsText(got, "reply_to_user 用简洁中文说明本轮检查了什么、做了什么、结果是什么，并尽量写出具体文件、命令或产出物") {
+	if !containsText(got, "reply_to_user 必须使用简洁中文，基于你本轮实际执行的检查、命令、修改或验证来说明") {
 		t.Fatalf("提示词缺少具体交接要求: %q", got)
+	}
+	if !containsText(got, "9. status 只能是 continue、blocked。") {
+		t.Fatalf("非置顶角色提示词缺少 status 取值限制: %q", got)
+	}
+	if !containsText(got, "10. 如果 status=blocked，next_role 必须为空字符串。") {
+		t.Fatalf("非置顶角色提示词缺少 blocked 输出约束: %q", got)
+	}
+	if containsText(got, "10. 如果 status=complete 或 blocked，next_role 必须为空字符串。") {
+		t.Fatalf("非置顶角色提示词不应包含 complete 输出约束: %q", got)
 	}
 }
 
@@ -70,14 +88,92 @@ func TestBuildRolePromptUsesLastHandoffPrompt(t *testing.T) {
 	cfg := &TaskConfig{TopRole: "审核者"}
 
 	got := buildRolePrompt(state, cfg, role)
-	if !containsText(got, "最近一次交接摘要: 已完成初版") {
+	if !containsText(got, "- 最近一次交接摘要: 已完成初版") {
 		t.Fatalf("提示词缺少交接摘要: %q", got)
 	}
-	if !containsText(got, "最近一次交接事项:\n- 检查边界条件\n- 补充验证") {
+	if !containsText(got, "只有在确认任务目标已经达成且没有明确待办时，才返回 complete。") {
+		t.Fatalf("置顶角色提示词缺少 complete 说明: %q", got)
+	}
+	if !containsText(got, "9. status 只能是 continue、blocked、complete。") {
+		t.Fatalf("置顶角色提示词缺少 status 取值限制: %q", got)
+	}
+	if !containsText(got, "10. 如果 status=complete 或 blocked，next_role 必须为空字符串。") {
+		t.Fatalf("提示词缺少统一状态输出约束: %q", got)
+	}
+	if !containsText(got, "- 最近一次交接事项:\n- 检查边界条件\n- 补充验证") {
 		t.Fatalf("提示词缺少交接事项: %q", got)
 	}
-	if !containsText(got, "本轮指令: 审查最新结果") {
+	if !containsText(got, "- 本轮指令: 审查最新结果") {
 		t.Fatalf("提示词未使用角色默认 prompt: %q", got)
+	}
+}
+
+func TestBuildRolePromptIncludesIndependentSessionRule(t *testing.T) {
+	state := TaskRuntimeState{
+		Goal:         "完成一个最小闭环",
+		WorkspaceDir: "/tmp/work",
+		TurnCount:    0,
+		MaxTurns:     6,
+		ActiveRole:   "设计者",
+	}
+	role := RoleConfig{
+		Name:             "设计者",
+		Description:      "负责设计和实现",
+		Instructions:     "根据目标推进实现",
+		Prompt:           "先核查上下文再推进",
+		AllowedNextRoles: []string{"审核者"},
+	}
+	cfg := &TaskConfig{TopRole: "审核者"}
+
+	got := buildRolePrompt(state, cfg, role)
+	if !containsText(got, "由于你是独立 session，开始行动前必须先基于任务目标、最近交接信息和相关文件/产出做最小必要核查。") {
+		t.Fatalf("提示词缺少独立 session 规则: %q", got)
+	}
+}
+
+func TestBuildRolePromptNonTopRoleBlockedRule(t *testing.T) {
+	state := TaskRuntimeState{
+		Goal:         "完成一个最小闭环",
+		WorkspaceDir: "/tmp/work",
+		TurnCount:    0,
+		MaxTurns:     6,
+		ActiveRole:   "设计者",
+	}
+	role := RoleConfig{
+		Name:             "设计者",
+		Description:      "负责设计和实现",
+		Instructions:     "根据目标推进实现",
+		Prompt:           "继续推进",
+		AllowedNextRoles: []string{"审核者"},
+	}
+	cfg := &TaskConfig{TopRole: "审核者"}
+
+	got := buildRolePrompt(state, cfg, role)
+	if !containsText(got, "只有在存在明确阻塞且当前无法继续推进时，才返回 blocked。") {
+		t.Fatalf("提示词缺少非置顶角色 blocked 规则: %q", got)
+	}
+}
+
+func TestBuildRolePromptTopRoleCompleteRule(t *testing.T) {
+	state := TaskRuntimeState{
+		Goal:         "完成一个最小闭环",
+		WorkspaceDir: "/tmp/work",
+		TurnCount:    1,
+		MaxTurns:     6,
+		ActiveRole:   "审核者",
+	}
+	role := RoleConfig{
+		Name:             "审核者",
+		Description:      "负责最终验收",
+		Instructions:     "确认目标是否达成",
+		Prompt:           "做最终判断",
+		AllowedNextRoles: []string{"设计者"},
+	}
+	cfg := &TaskConfig{TopRole: "审核者"}
+
+	got := buildRolePrompt(state, cfg, role)
+	if !containsText(got, "只有在确认任务目标已经达成且没有明确待办时，才返回 complete。") {
+		t.Fatalf("提示词缺少置顶角色 complete 规则: %q", got)
 	}
 }
 

@@ -306,42 +306,69 @@ func buildRolePrompt(state TaskRuntimeState, cfg *TaskConfig, role RoleConfig) s
 		}
 	}
 
-	lines := []string{
-		"你正在一个单任务、多角色、串行执行的自动编排器中。",
-		fmt.Sprintf("任务目标: %s", state.Goal),
-		fmt.Sprintf("工作目录: %s", state.WorkspaceDir),
-		fmt.Sprintf("当前总轮次: %d / %d", state.TurnCount+1, state.MaxTurns),
-		fmt.Sprintf("当前角色: %s", role.Name),
-		fmt.Sprintf("唯一允许结束流程的置顶角色: %s", cfg.TopRole),
-		fmt.Sprintf("角色描述: %s", emptyFallback(role.Description, "无")),
-		fmt.Sprintf("角色职责: %s", emptyFallback(role.Instructions, "无")),
-		fmt.Sprintf("允许交接到: %s", allowedRolesText(role.AllowedNextRoles)),
-		fmt.Sprintf("最近一次交接摘要: %s", lastHandoffSummary),
-		fmt.Sprintf("最近一次交接事项:\n%s", lastHandoffItems),
-		fmt.Sprintf("本轮指令: %s", emptyFallback(role.Prompt, "无")),
-		"执行原则:",
-		"1. 先检查当前上下文、项目内文件、已有结果和可用的最小验证方式，再决定本轮动作。",
-		"2. 优先直接执行能推进目标的动作，并把范围控制在本轮最小且高价值的闭环内。",
-		"3. 不要把一轮扩展成多个分散的大任务；本轮应尽量形成一个清晰结果，或明确识别一个清晰阻塞点。",
-		"4. 不要编造未执行过的检查、命令、修改、验证或结论。",
-		"5. 除非当前状态是明确 blocked，否则本轮必须产出至少一种可检查结果，例如代码修改、文档更新、测试补充、配置变更、命令执行记录或检查结论，不能只停留在空泛表述。",
-		"6. 如果没有修改文件，也必须明确说明检查了哪些文件、执行了哪些命令、观察到什么结果，以及为什么当前无需修改。",
-		fmt.Sprintf("7. 只有置顶角色 %s 可以返回 complete；其他角色即使判断主体工作已完成，也必须继续流转给置顶角色做最终判定。", cfg.TopRole),
-		"8. 如果存在当前无法继续推进的明确阻塞，直接返回 blocked，并写清原因。",
-		"9. 如果任务还可以继续推进，返回 continue，并从允许交接列表中选择 next_role。",
+	statusRules := []string{
+		"状态判定:",
+		"1. 只有在存在明确阻塞且当前无法继续推进时，才返回 blocked。",
+		"2. 否则返回 continue，并从允许交接列表中选择 next_role。",
+	}
+	if role.Name == cfg.TopRole {
+		statusRules = []string{
+			"状态判定:",
+			"1. 只有在确认任务目标已经达成且没有明确待办时，才返回 complete。",
+			"2. 如果存在明确阻塞且当前无法继续推进，可以返回 blocked。",
+			"3. 否则返回 continue，并从允许交接列表中选择 next_role。",
+		}
+	}
+	outputRules := []string{
 		"输出要求:",
 		"1. 最终输出必须严格符合给定 JSON Schema，不要输出额外文本。",
-		"2. status 只能是 continue、blocked、complete。",
-		"3. reply_to_user 用简洁中文说明本轮检查了什么、做了什么、结果是什么，并尽量写出具体文件、命令或产出物。",
-		"4. handoff_summary 用一句话概括本轮结果，不能只写空泛结论。",
-		"5. handoff_items 列出下一步必须关注的事项，优先写明需要查看的文件、待补的验证或待继续的具体动作；没有则返回空数组。",
-		"6. 如果本轮有文件修改、文档更新、测试补充或关键检查结果，必须在 reply_to_user 或 handoff_items 中明确体现，保证下一个角色知道你实际做了什么。",
-		"7. 如果 status=continue，next_role 必须从允许交接列表中选择。",
-		fmt.Sprintf("8. 只有置顶角色 %s 可以设置 status=complete；如果不是该角色，不允许输出 complete。", cfg.TopRole),
-		"9. 如果 status=blocked，completion_reason 和 reply_to_user 必须明确说明阻塞点。",
-		"10. completion_confidence 是 0 到 1 的数字，表示你对当前判断的把握。",
+		"2. reply_to_user 必须使用简洁中文，基于你本轮实际执行的检查、命令、修改或验证来说明：你检查了什么、做了什么、结果是什么。",
+		"3. 如果本轮修改了文件、更新了文档、补充了测试、执行了命令，或得到关键检查结论，必须在 reply_to_user 中写明具体文件、命令或产出。",
+		"4. handoff_summary 必须用一句话概括本轮最重要的实际结果，不能只写空泛结论。",
+		"5. handoff_items 必须只列出下一步真正需要关注的具体事项，优先写明要查看的文件、待补的验证、待继续的修改或待确认的阻塞；没有则返回空数组。",
+		"6. 如果 status=continue，next_role 必须从允许交接列表中选择。",
+		"7. 如果 status=blocked，completion_reason 和 reply_to_user 必须明确说明阻塞点、阻塞原因，以及当前为什么无法继续推进。",
+		"8. completion_confidence 是 0 到 1 的数字，表示你对当前判断的把握。",
 	}
-	return strings.Join(lines, "\n")
+	if role.Name == cfg.TopRole {
+		outputRules = append(outputRules,
+			"9. status 只能是 continue、blocked、complete。",
+			"10. 如果 status=complete 或 blocked，next_role 必须为空字符串。",
+		)
+	} else {
+		outputRules = append(outputRules,
+			"9. status 只能是 continue、blocked。",
+			"10. 如果 status=blocked，next_role 必须为空字符串。",
+		)
+	}
+
+	sections := []string{
+		"你正在一个单任务、多角色、串行执行的自动编排器中。",
+		strings.Join([]string{
+			"任务上下文:",
+			fmt.Sprintf("- 任务目标: %s", state.Goal),
+			fmt.Sprintf("- 工作目录: %s", state.WorkspaceDir),
+			fmt.Sprintf("- 当前总轮次: %d / %d", state.TurnCount+1, state.MaxTurns),
+			fmt.Sprintf("- 当前角色: %s", role.Name),
+			fmt.Sprintf("- 角色描述: %s", emptyFallback(role.Description, "无")),
+			fmt.Sprintf("- 角色职责: %s", emptyFallback(role.Instructions, "无")),
+			fmt.Sprintf("- 允许交接到: %s", allowedRolesText(role.AllowedNextRoles)),
+			fmt.Sprintf("- 最近一次交接摘要: %s", lastHandoffSummary),
+			fmt.Sprintf("- 最近一次交接事项:\n%s", lastHandoffItems),
+			fmt.Sprintf("- 本轮指令: %s", emptyFallback(role.Prompt, "无")),
+		}, "\n"),
+		strings.Join([]string{
+			"本轮要求:",
+			"1. 由于你是独立 session，开始行动前必须先基于任务目标、最近交接信息和相关文件/产出做最小必要核查。",
+			"2. 不要直接信任未核实的交接结论；如与实际代码、文件或命令结果不一致，以本轮核查结果为准。",
+			"3. 优先执行当前最能推进目标的一步，把范围控制在本轮最小闭环内。",
+			"4. 不要编造未执行过的检查、命令、修改、验证或结论。",
+			"5. 除非当前状态是明确 blocked，否则本轮必须产出至少一种可检查结果，例如代码修改、文档更新、测试补充、命令执行记录或检查结论，不能只停留在空泛表述。",
+		}, "\n"),
+		strings.Join(statusRules, "\n"),
+		strings.Join(outputRules, "\n"),
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func emptyFallback(value string, fallback string) string {
